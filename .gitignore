@@ -1,0 +1,9 @@
+# Project Zomboid runtime state
+/data/
+/Zomboid/
+
+# Local logs
+*.log
+
+# macOS metadata
+.DS_Store
