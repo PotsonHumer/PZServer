@@ -49,13 +49,16 @@ docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
   -v "$PWD/data:/home/steam/Zomboid" \
   -p 16261:16261/udp \
   -p 16262:16262/udp \
-  pz-server:local \
-  -adminpassword '請換成強密碼'
+  -e PZ_ADMIN_PASSWORD='請換成強密碼' \
+  pz-server:local
 ```
 
-`-adminpassword` 會在第一次建立時自動設定 `admin` 帳號，因此不會要求互動輸入。
-此參數也可變更既有的管理員密碼；不想變更時，請在後續啟動命令中移除它。密碼會出現在
-shell 歷史與 `docker inspect` 的容器設定中，請勿使用容易猜測的密碼。
+`PZ_ADMIN_PASSWORD` 會在首次建立時自動設定 `admin` 帳號，因此不會要求互動輸入。
+映像只會在偵測到 PZ 的兩個首次密碼提示時，經由僅存在於記憶體的私有 stdin FIFO 提供
+這個值，避免 PZ 啟動器把密碼當成 command-line argument 寫進日誌，也不會把它當成伺服器
+console 指令；未設定時維持 Project Zomboid 的正常啟動路徑。這個值仍會出現在 shell 歷史
+與 `docker inspect` 的容器設定中，請勿使用容易猜測的密碼，並於首次初始化後從後續容器
+設定中移除它。
 
 ```sh
 docker stop --time 60 pz-server
@@ -73,6 +76,29 @@ docker logs --follow pz-server
 
 `STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
 遺失尚未儲存的進度；請定期備份持久化資料目錄。
+
+## Zeabur 部署
+
+Zeabur 會偵測儲存庫根目錄的 `Dockerfile` 並以它建置服務；本專案不需要 Docker Compose
+或額外的啟動腳本。建立服務後，請保留 **Start Command** 空白，因為設定它會覆寫映像的
+entrypoint，導致資料目錄準備、訊號處理與管理員密碼初始化被略過。
+
+在服務設定中完成以下項目：
+
+1. 在 Environment Variables 新增秘密 `PZ_ADMIN_PASSWORD`，以非互動方式建立 `admin`
+   密碼。不要把這個值提交到 Git，也不要把它寫進 Dockerfile；首次初始化完成後，請從
+   後續服務設定中移除它以縮小秘密暴露面。
+2. 在 Volumes 新增一個持久化 Volume（例如 ID 為 `pz-data`），Mount Directory 設為
+   `/home/steam/Zomboid`。此 Volume 保留 `Server/` 設定與 `Saves/Multiplayer/` 世界資料，
+   因此重新部署或替換服務後仍可繼續使用。**不要**掛載 `/home/steam/pzserver`，否則空的
+   Volume 會遮蔽映像內安裝的遊戲檔案。
+3. 在 Networking 建立兩條公開 UDP forwarding，container port 分別為 `16261` 與 `16262`。
+   記下 Zeabur 顯示的公開主機名稱與連接埠：玩家以第一條轉發的公開位址連線，兩條轉發都
+   必須保留以支援 Steam query 與直接連線。
+
+`SERVERNAME.ini` 的 `DefaultPort=16261` 與 `UDPPort=16262` 必須繼續對應上述**容器**目標
+連接埠；若變更遊戲設定，請同時變更兩條 Zeabur UDP forwarding。首次部署後，請以外部
+Project Zomboid 用戶端實際連線，並在重新部署後確認 Volume 中的設定與世界仍存在。
 
 ## UDP 連接埠
 
@@ -107,8 +133,8 @@ docker run --platform linux/amd64 --name pz-server-legacy -d -it --stop-timeout 
   pz-server:local
 ```
 
-變更遊戲內 UDP 連接埠時，也要一併變更對應的 `-p` 選項與主機網路規則。每個伺服器
-實例都需要一組未被占用的 UDP 連接埠。
+變更遊戲內 UDP 連接埠時，也要一併變更對應的 `-p` 選項、Zeabur UDP forwarding 或主機
+網路規則。每個伺服器實例都需要一組未被占用的 UDP 連接埠。
 
 ## 更新
 

@@ -58,7 +58,61 @@ RUN apt-get update \
     && chown steam:steam "${PZ_DATA_DIR}"
 
 COPY --from=downloader --chown=steam:steam /home/steam/pzserver ${PZ_SERVER_DIR}
-COPY --chown=steam:steam --chmod=755 docker/pz-entrypoint.sh /usr/local/bin/pz-entrypoint.sh
+
+COPY --chmod=755 <<'EOF' /usr/local/bin/pz-entrypoint.sh
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+: "${PZ_SERVER_DIR:=/home/steam/pzserver}"
+: "${PZ_DATA_DIR:=${HOME}/Zomboid}"
+
+if [[ ! -x "${PZ_SERVER_DIR}/start-server.sh" ]]; then
+  echo "Project Zomboid server startup script is missing: ${PZ_SERVER_DIR}/start-server.sh" >&2
+  exit 1
+fi
+
+mkdir -p "${PZ_DATA_DIR}"
+
+if [[ -z "${PZ_ADMIN_PASSWORD:-}" ]]; then
+  exec "${PZ_SERVER_DIR}/start-server.sh" "$@"
+fi
+
+runtime_dir="$(mktemp -d)"
+input_fifo="${runtime_dir}/input"
+output_fifo="${runtime_dir}/output"
+server_pid=""
+
+cleanup() {
+  rm -f "${input_fifo}" "${output_fifo}"
+  rmdir "${runtime_dir}" 2>/dev/null || true
+}
+
+shutdown() {
+  if [[ -n "${server_pid}" ]]; then
+    kill -TERM -- "-${server_pid}" 2>/dev/null || kill -TERM "${server_pid}" 2>/dev/null || true
+    wait "${server_pid}" || true
+  fi
+  exit 0
+}
+
+trap cleanup EXIT
+trap shutdown INT TERM
+
+mkfifo --mode=600 "${input_fifo}" "${output_fifo}"
+setsid "${PZ_SERVER_DIR}/start-server.sh" "$@" <"${input_fifo}" >"${output_fifo}" 2>&1 &
+server_pid="$!"
+exec 3>"${input_fifo}"
+
+while IFS= read -r line || [[ -n "${line}" ]]; do
+  printf '%s\n' "${line}"
+  if [[ "${line}" == *"Enter new administrator password:"* || "${line}" == *"Confirm the password:"* ]]; then
+    printf '%s\n' "${PZ_ADMIN_PASSWORD}" >&3
+  fi
+done <"${output_fifo}"
+
+wait "${server_pid}"
+EOF
 
 USER steam
 WORKDIR ${PZ_SERVER_DIR}
