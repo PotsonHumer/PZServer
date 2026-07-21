@@ -5,11 +5,11 @@ Define the Project Zomboid UDP port-publication guidance required in the deploym
 ## Requirements
 
 ### Requirement: Current-version UDP publishing guidance
-The project documentation SHALL identify `16261/udp` and `16262/udp` as the current default Project Zomboid server port pair and provide a Docker run example that publishes both.
+The project documentation SHALL identify `16261/udp` and `16262/udp` as the current default Project Zomboid server port pair, provide a Docker run example that publishes both, and provide Zeabur instructions that configure UDP forwarding to both container ports.
 
 #### Scenario: Deploy a current-version server
-- **WHEN** an operator follows the current-version run example
-- **THEN** Docker publishes UDP ports `16261` and `16262` from the host to the container
+- **WHEN** an operator follows the current-version Docker or Zeabur deployment instructions
+- **THEN** UDP traffic to container ports `16261` and `16262` is made available through the selected deployment environment
 
 ### Requirement: Legacy UDP publishing guidance
 The project documentation SHALL identify `16261/udp`, `8766/udp`, and `8767/udp` as the legacy pre-41.77 ports and provide a separate Docker run example that publishes them.

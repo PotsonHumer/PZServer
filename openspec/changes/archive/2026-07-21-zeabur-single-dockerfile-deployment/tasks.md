@@ -14,4 +14,4 @@
 
 - [x] 3.1 Build the `linux/amd64` image and inspect its entrypoint, runtime user, volume metadata, and UDP port metadata.
 - [x] 3.2 Smoke-test startup with an empty disposable data mount both with and without `PZ_ADMIN_PASSWORD`; confirm the password is not emitted in server logs or command-line arguments and the data directory is created.
-- [ ] 3.3 Deploy the image to Zeabur with its volume and two UDP forwarders, then verify a client can connect and settings and world data survive a redeploy.
+- [x] 3.3 Deploy the image to Zeabur with its volume and two UDP forwarders, then verify a client can connect and settings and world data survive a redeploy.
