@@ -33,6 +33,7 @@ RUN case "${BUILDARCH}" in \
 RUN mkdir -p "${PZ_SERVER_DIR}" \
     && (DepotDownloader \
         -app "${PZ_APP_ID}" \
+        -branch unstable \
         -os linux \
         -dir "${PZ_SERVER_DIR}" \
         > /tmp/depotdownloader.log 2>&1 \

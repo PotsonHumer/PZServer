@@ -1,11 +1,12 @@
 # Project Zomboid 專用伺服器
 
 本儲存庫會建立可在 Apple Silicon、Linux x86_64 與 Windows Docker Desktop 建置的
-Project Zomboid 專用伺服器映像。建置的第一階段會依建置主機架構自動選擇官方
-[DepotDownloader](https://github.com/SteamRE/DepotDownloader)：ARM64 使用 `arm64`，
-x86_64 使用 `x64`，下載 Steam App ID `380870`。最終映像是 `linux/amd64`；在 Apple
-Silicon 上由 OrbStack 或 Docker Desktop 的 Apple x86_64 轉譯執行完整遊戲與 Java
-程序。**不會執行 SteamCMD**。若要更新伺服器檔案，請重新建置映像。
+Project Zomboid **Build 42 Unstable** 專用伺服器映像。建置的第一階段會依建置主機架構
+自動選擇官方 [DepotDownloader](https://github.com/SteamRE/DepotDownloader)：ARM64 使用
+`arm64`，x86_64 使用 `x64`，並從 Steam App ID `380870` 的 `unstable` 分支下載伺服器。
+最終映像是 `linux/amd64`；在 Apple Silicon 上由 OrbStack 或 Docker Desktop 的 Apple
+x86_64 轉譯執行完整遊戲與 Java 程序。**不會執行 SteamCMD**。若要更新伺服器檔案，請
+重新建置映像。
 
 ## 先決條件
 
@@ -24,15 +25,18 @@ Silicon 上由 OrbStack 或 Docker Desktop 的 Apple x86_64 轉譯執行完整�
 docker build --platform linux/amd64 --network host -t pz-server:local .
 ```
 
-建置會以匿名存取、固定版本且依建置架構選擇的官方 DepotDownloader 從 Steam 下載
-專用伺服器，並驗證下載器的 SHA-256；完成後才將檔案複製至 `linux/amd64` 最終映像。
-此步驟需要網路連線，且可能花費數分鐘。
+建置會以匿名存取、依建置架構選擇的官方 DepotDownloader，從 Steam 的 `unstable`
+分支下載最新的 Build 42 專用伺服器，並驗證下載器的 SHA-256；完成後才將檔案複製至
+`linux/amd64` 最終映像。此步驟需要網路連線，且可能花費數分鐘。
 
 下載層請使用 `--network host`，讓 Steam 連線直接使用部署主機的網路。
 
 本映像刻意不使用在 Apple Silicon 上無法可靠執行的 32 位元 SteamCMD。若
 DepotDownloader 建置失敗，Docker 會立刻以非零狀態結束；請保留最後成功的映像，
 稍後再重新建置。
+
+所有要連線的玩家也必須在 Steam 的「內容／Betas」中選擇 `Unstable` 分支，否則會與
+此 Build 42 伺服器發生版本不符。
 
 ## 持久化伺服器資料與首次啟動
 
@@ -138,7 +142,8 @@ docker run --platform linux/amd64 --name pz-server-legacy -d -it --stop-timeout 
 
 ## 更新
 
-映像在執行時刻意維持不可變。請透過重新建置進行更新：
+映像在執行時刻意維持不可變。請透過重新建置更新至 Steam `unstable` 分支當時最新的
+Build 42 版本：
 
 ```sh
 docker build --pull --platform linux/amd64 --network host -t pz-server:local .
