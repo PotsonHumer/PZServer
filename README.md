@@ -1,9 +1,9 @@
 # Project Zomboid 專用伺服器
 
 本儲存庫會建立可在 Apple Silicon、Linux x86_64 與 Windows Docker Desktop 建置的
-Project Zomboid **Build 42 Unstable** 專用伺服器映像。建置的第一階段會依建置主機架構
+Project Zomboid **Build 42 Stable** 專用伺服器映像。建置的第一階段會依建置主機架構
 自動選擇官方 [DepotDownloader](https://github.com/SteamRE/DepotDownloader)：ARM64 使用
-`arm64`，x86_64 使用 `x64`，並從 Steam App ID `380870` 的 `unstable` 分支下載伺服器。
+`arm64`，x86_64 使用 `x64`，並從 Steam App ID `380870` 的公開穩定分支下載伺服器。
 最終映像是 `linux/amd64`；在 Apple Silicon 上由 OrbStack 或 Docker Desktop 的 Apple
 x86_64 轉譯執行完整遊戲與 Java 程序。**不會執行 SteamCMD**。若要更新伺服器檔案，請
 重新建置映像。
@@ -14,7 +14,7 @@ x86_64 轉譯執行完整遊戲與 Java 程序。**不會執行 SteamCMD**。若
   一般 Linux／Windows x86_64 Docker 主機則可原生執行最終映像。請保留至少 8 GB 記憶體。
 - Project Zomboid 伺服器沒有原生 ARM64 Linux 執行檔。下載器會在建置主機架構原生執行，
   遊戲則一律作為完整 `linux/amd64` 程序樹執行，避免 32 位元 SteamCMD 與 Box64 JVM 的問題。
-- 用於持久化伺服器資料的主機目錄或 Docker volume。
+- 用於持久化伺服器資料的 Docker volume。本文的 `pz-data` 具名 volume 會由 Docker 自動建立。
 
 ## 建置
 
@@ -22,11 +22,11 @@ x86_64 轉譯執行完整遊戲與 Java 程序。**不會執行 SteamCMD**。若
 從本目錄建置映像。
 
 ```sh
-docker build --platform linux/amd64 --network host -t pz-server:local .
+docker build --load --platform linux/amd64 --network host -t pz-server:local .
 ```
 
-建置會以匿名存取、依建置架構選擇的官方 DepotDownloader，從 Steam 的 `unstable`
-分支下載最新的 Build 42 專用伺服器，並驗證下載器的 SHA-256；完成後才將檔案複製至
+建置會以匿名存取、依建置架構選擇的官方 DepotDownloader，從 Steam 的公開穩定分支
+下載目前的 Build 42 專用伺服器，並驗證下載器的 SHA-256；完成後才將檔案複製至
 `linux/amd64` 最終映像。此步驟需要網路連線，且可能花費數分鐘。
 
 下載層請使用 `--network host`，讓 Steam 連線直接使用部署主機的網路。
@@ -35,22 +35,22 @@ docker build --platform linux/amd64 --network host -t pz-server:local .
 DepotDownloader 建置失敗，Docker 會立刻以非零狀態結束；請保留最後成功的映像，
 稍後再重新建置。
 
-所有要連線的玩家也必須在 Steam 的「內容／Betas」中選擇 `Unstable` 分支，否則會與
-此 Build 42 伺服器發生版本不符。
+所有要連線的玩家都必須使用 Steam 的正常公開版本；請勿選擇 `Unstable`、`42.19` 或其他
+Beta 分支，否則會與此 Build 42 Stable 伺服器發生版本不符。
 
 ## 持久化伺服器資料與首次啟動
 
-Project Zomboid 會在容器內的 `/home/steam/Zomboid` 儲存產生的設定與多人存檔。
-請掛載此路徑；**不要**掛載覆蓋 `/home/steam/pzserver`，該處存放的是映像內安裝的
-遊戲檔案。
+Project Zomboid 會在容器內的 `/home/steam/Zomboid` 儲存產生的設定與多人存檔。映像的
+entrypoint 會在這個目錄不存在時自動建立它。請掛載此路徑；**不要**掛載覆蓋
+`/home/steam/pzserver`，該處存放的是映像內安裝的遊戲檔案。
 
-第一次啟動時請保持終端機連接。以下範例會自動設定管理員密碼，並在掛載目錄下建立
-設定；初始設定完成後，從另一個終端機停止伺服器：
+第一次啟動時請保持終端機連接。以下範例會自動設定管理員密碼，並使用具名 Docker
+volume `pz-data` 儲存設定與世界；volume 不存在時 Docker 會自動建立它。初始設定完成後，
+從另一個終端機停止伺服器：
 
 ```sh
-mkdir -p data
 docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
-  -v "$PWD/data:/home/steam/Zomboid" \
+  -v pz-data:/home/steam/Zomboid \
   -p 16261:16261/udp \
   -p 16262:16262/udp \
   -e PZ_ADMIN_PASSWORD='請換成強密碼' \
@@ -75,8 +75,14 @@ docker start pz-server
 docker logs --follow pz-server
 ```
 
-重新建置映像後若要替換容器，請保留同一個 `data` 目錄，並以新映像重複執行
-`docker run` 命令。掛載目錄包含 `Server/` 設定與 `Saves/Multiplayer/` 世界資料。
+重新建置映像後若要替換容器，請保留同一個 `pz-data` volume，並以新映像重複執行
+`docker run` 命令。它包含 `Server/` 設定與 `Saves/Multiplayer/` 世界資料。可使用
+`docker volume inspect pz-data` 查看其 Docker 管理的位置。
+
+若刻意需要主機可見的檔案，也能改用 bind mount，例如
+`-v "$PWD/data:/home/steam/Zomboid"`；此時 `data` 是主機目錄，必須由主機端建立並確保
+容器內 `steam` 使用者可寫入。Dockerfile 無法建立部署主機上的這個目錄，因此本文的主要
+指令採用 `pz-data` volume。
 
 `STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
 遺失尚未儲存的進度；請定期備份持久化資料目錄。
@@ -116,7 +122,7 @@ Dockerfile 中的 `EXPOSE` 僅作為文件用途，不會自行發布連接埠�
 
 ```sh
 docker run --platform linux/amd64 --name pz-server -d -it --stop-timeout 60 \
-  -v "$PWD/data:/home/steam/Zomboid" \
+  -v pz-data:/home/steam/Zomboid \
   -p 16261:16261/udp \
   -p 16262:16262/udp \
   pz-server:local
@@ -130,7 +136,7 @@ docker run --platform linux/amd64 --name pz-server -d -it --stop-timeout 60 \
 
 ```sh
 docker run --platform linux/amd64 --name pz-server-legacy -d -it --stop-timeout 60 \
-  -v "$PWD/data-legacy:/home/steam/Zomboid" \
+  -v pz-data-legacy:/home/steam/Zomboid \
   -p 16261:16261/udp \
   -p 8766:8766/udp \
   -p 8767:8767/udp \
@@ -142,12 +148,13 @@ docker run --platform linux/amd64 --name pz-server-legacy -d -it --stop-timeout 
 
 ## 更新
 
-映像在執行時刻意維持不可變。請透過重新建置更新至 Steam `unstable` 分支當時最新的
+映像在執行時刻意維持不可變。請透過重新建置更新至 Steam 公開穩定分支當時最新的
 Build 42 版本：
 
 ```sh
-docker build --pull --platform linux/amd64 --network host -t pz-server:local .
+docker build --pull --load --platform linux/amd64 --network host -t pz-server:local .
 ```
 
-請先確認已備份舊容器的持久化資料目錄，再停止與移除舊容器。接著以相同的資料掛載
-建立替代容器。
+42.19 Unstable 的世界不相容於 42.20 Stable。本專案的 42.20 更新會建立新世界；請使用
+新的 `pz-data` volume，而不要掛載舊的 42.19 資料。停止與移除舊容器後，以本文件的
+`docker run` 指令建立替代容器。
