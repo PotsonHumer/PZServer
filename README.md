@@ -87,6 +87,88 @@ docker logs --follow pz-server
 `STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
 遺失尚未儲存的進度；請定期備份持久化資料目錄。
 
+## 排程備份後關閉 Linux 主機
+
+[`scripts/pz-backup-and-poweroff.sh`](scripts/pz-backup-and-poweroff.sh) 是供 **root 的
+crontab** 使用的主機端腳本。它不是 PZ console 或 RCON 指令；流程會先以
+`docker stop --timeout 120 pz-server` 正常停服，再直接封存完整 `pz-data` volume，最後才
+關閉整台 Linux 主機。
+
+> 此腳本沒有 dry-run 模式。手動執行成功後會真的呼叫 `systemctl poweroff`，請先在維護時段
+> 使用 mock 測試或確認你可接受主機關機。
+
+腳本預設使用下列名稱；若部署時不同，可在 root crontab 中以同名環境變數覆寫：
+
+| 項目 | 預設值 |
+| --- | --- |
+| 容器 | `pz-server` (`PZ_CONTAINER_NAME`) |
+| Docker volume | `pz-data` (`PZ_VOLUME_NAME`) |
+| 映像 | `pz-server:local` (`PZ_IMAGE_NAME`) |
+| 備份目錄 | `/home/potsonhumer/pa-backup` (`PZ_BACKUP_DIR`) |
+
+主機必須具備 Docker、`tar`、`sha256sum`、`flock`、`runuser`、`sync` 與 `systemctl`；並且
+`potsonhumer` 使用者與 `root` 群組必須存在。安裝腳本：
+
+```sh
+sudo install -o root -g root -m 0750 \
+  scripts/pz-backup-and-poweroff.sh \
+  /usr/local/sbin/pz-backup-and-poweroff.sh
+```
+
+腳本會在不存在時以 `potsonhumer` 身分建立 `/home/potsonhumer/pa-backup`。封存檔與對應的
+`.sha256` 校驗檔會是 `potsonhumer:root`、模式 `0640`。root 會先在自己的暫存目錄產生與驗證
+備份，再交由 `potsonhumer` 發布到家目錄，以避免 root cron 在使用者可寫的家目錄中直接改
+權限或刪除檔案。
+
+每次成功執行後只保留最新三份：
+
+```text
+/home/potsonhumer/pa-backup/
+├── pz-data-20260802T040000Z-1234.tar.gz
+├── pz-data-20260802T040000Z-1234.tar.gz.sha256
+├── pz-data-20260803T040000Z-1234.tar.gz
+├── pz-data-20260803T040000Z-1234.tar.gz.sha256
+├── pz-data-20260804T040000Z-1234.tar.gz
+└── pz-data-20260804T040000Z-1234.tar.gz.sha256
+```
+
+請用 `sudo crontab -e` 安裝排程；例如每天 04:00 執行：
+
+```cron
+0 4 * * * /usr/local/sbin/pz-backup-and-poweroff.sh >> /var/log/pz-backup-and-poweroff.log 2>&1
+```
+
+腳本會在下列情況以非零狀態結束，並且**不會**關閉主機：容器或 volume 不存在、另一個備份
+已執行、容器無法正常停止、封存或校驗失敗、或停止後 exit code 為 `137`（Docker 在 120 秒
+後強制結束）。在失敗前不會刪除既有完成的備份；exit code `137` 時也不會建立新備份，請先
+檢查 `docker logs pz-server` 後再處理。
+
+排程時間與主機下次開機後是否自動啟動 PZ 是獨立的營運決策。後者由 Docker 的 restart policy
+決定，這個腳本不會替你設定。
+
+### 驗證與還原封存檔
+
+在主機上可先驗證校驗檔：
+
+```sh
+cd /home/potsonhumer/pa-backup
+sha256sum --check pz-data-<timestamp>.tar.gz.sha256
+```
+
+還原時建議先建立**新的** volume，避免舊世界殘留的檔案混入：
+
+```sh
+docker volume create pz-data-restore
+docker run --rm --user 0:0 --entrypoint tar \
+  -v pz-data-restore:/data \
+  -v /home/potsonhumer/pa-backup:/backup:ro \
+  pz-server:local \
+  -C /data -xzf /backup/pz-data-<timestamp>.tar.gz
+```
+
+確認 `pz-data-restore` 中包含 `Server/` 與 `Saves/Multiplayer/` 後，再以它建立隔離的測試
+容器，或在另行確認後取代正式容器的掛載 volume。不要在正在執行的 `pz-server` 上直接解壓縮。
+
 ## Zeabur 部署
 
 Zeabur 會偵測儲存庫根目錄的 `Dockerfile` 並以它建置服務；本專案不需要 Docker Compose
