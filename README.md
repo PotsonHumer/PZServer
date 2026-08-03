@@ -65,7 +65,7 @@ console 指令；未設定時維持 Project Zomboid 的正常啟動路徑。這�
 設定中移除它。
 
 ```sh
-docker stop --time 60 pz-server
+docker stop --timeout 60 pz-server
 ```
 
 後續執行時，可在背景啟動既有且已設定的容器，或連接至其主控台：
@@ -86,6 +86,75 @@ docker logs --follow pz-server
 
 `STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
 遺失尚未儲存的進度；請定期備份持久化資料目錄。
+
+## 僅限容器本機的 RCON 管理指令
+
+這個功能讓你登入 Linux 主機後，可以直接下 PZ 的管理指令，例如查玩家、存檔與正常關服。
+設定完成後，平常只需記得：
+
+```sh
+docker exec pz-server pz-rcon players  # 誰在線上？
+docker exec pz-server pz-rcon save     # 立刻存檔
+docker exec pz-server pz-rcon quit     # 正常關閉伺服器
+```
+
+不會開放 RCON 到網際網路或區網，也不需要額外在 Linux 安裝工具。
+
+### 第 1 步：準備 RCON 密碼檔
+
+在專案根目錄的 `secrets/` 中建立 `rcon-password` 文字檔，內容只放一行難以猜測的密碼。
+這個檔案已被 Git 忽略。建立後讓容器內的 `steam` 使用者可以讀取：
+
+```sh
+chmod 0444 ./secrets/rcon-password
+```
+
+這個檔案是給 Linux 指令使用的 **RCON 密碼**，不是玩家登入密碼，也不是下面的
+`PZ_ADMIN_PASSWORD`。
+
+### 第 2 步：啟動伺服器
+
+在原本的 `docker run` 指令加上三個 `PZ_RCON_*` 設定，以及密碼檔掛載即可。以下可直接
+使用；請只替換 `PZ_ADMIN_PASSWORD` 的值。
+
+```sh
+docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
+  -v pz-data:/home/steam/Zomboid \
+  -v ./secrets/rcon-password:/run/secrets/pz-rcon-password:ro \
+  -p 16261:16261/udp \
+  -p 16262:16262/udp \
+  -e PZ_ADMIN_PASSWORD='請換成強密碼' \
+  -e PZ_RCON_PASSWORD_FILE=/run/secrets/pz-rcon-password \
+  -e PZ_RCON_PORT=27015 \
+  -e PZ_SERVER_NAME=servertest \
+  pz-server:local
+```
+
+這裡沒有 `-p 27015:27015`：這是刻意省略的。RCON 只供容器內的 `pz-rcon` 使用，玩家與
+外部網路無法連線到它。
+
+### 第 3 步：在 Linux 主機下管理指令
+
+容器運行後，從同一台 Linux 主機執行：
+
+```sh
+docker exec pz-server pz-rcon players          # 列出在線玩家
+docker exec pz-server pz-rcon save             # 立刻存檔
+docker exec pz-server pz-rcon 'servermsg "伺服器將於 5 分鐘後維護"'
+```
+
+要維護或備份時，依序公告、存檔、關服：
+
+```sh
+docker exec pz-server pz-rcon 'servermsg "伺服器現在關閉以進行維護"'
+docker exec pz-server pz-rcon save
+docker exec pz-server pz-rcon quit
+docker wait pz-server
+```
+
+注意：能執行 `docker exec` 的 Linux 使用者，就能下任何 PZ 管理指令。RCON 密碼會存進
+`pz-data` 的 PZ 設定檔，且隨備份保存；請保護 Docker volume 與備份檔。若不設定
+`PZ_RCON_PASSWORD_FILE`，RCON 不會啟用，伺服器仍照原本方式啟動。
 
 ## 排程備份後關閉 Linux 主機
 

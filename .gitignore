@@ -2,6 +2,9 @@
 /data/
 /Zomboid/
 
+# Local RCON secret (keep secrets/.gitkeep tracked)
+/secrets/rcon-password
+
 # Local logs
 *.log
 
