@@ -1,6 +1,7 @@
 # Project Zomboid runtime state
 /data/
 /Zomboid/
+/pz-data/
 
 # Local RCON secret (keep secrets/.gitkeep tracked)
 /secrets/rcon-password
