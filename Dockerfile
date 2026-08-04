@@ -67,7 +67,8 @@ FROM ubuntu:24.04
 
 ENV PZ_SERVER_DIR=/home/steam/pzserver \
     PZ_DATA_DIR=/home/steam/Zomboid \
-    HOME=/home/steam
+    HOME=/home/steam \
+    PZ_JAVA_XMX=
 
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends ca-certificates \
@@ -78,6 +79,10 @@ RUN apt-get update \
 
 COPY --from=downloader --chown=steam:steam /home/steam/pzserver ${PZ_SERVER_DIR}
 COPY --from=rcon-client --chmod=755 /usr/local/bin/mcrcon /usr/local/bin/mcrcon
+
+RUN install --mode=0444 \
+        "${PZ_SERVER_DIR}/ProjectZomboid64.json" \
+        "${PZ_SERVER_DIR}/ProjectZomboid64.default.json"
 
 COPY --chmod=755 <<'EOF' /usr/local/bin/pz-entrypoint.sh
 #!/usr/bin/env bash
@@ -99,6 +104,41 @@ mkdir -p "${PZ_DATA_DIR}"
 fail_rcon_configuration() {
   echo "Project Zomboid RCON configuration error: $1" >&2
   exit 1
+}
+
+fail_java_heap_configuration() {
+  echo "Project Zomboid Java heap configuration error: $1" >&2
+  exit 1
+}
+
+configure_java_heap() {
+  local launcher_config="${PZ_SERVER_DIR}/ProjectZomboid64.json"
+  local launcher_baseline="${PZ_SERVER_DIR}/ProjectZomboid64.default.json"
+  local temporary_path match_count
+
+  [[ -r "${launcher_baseline}" ]] || \
+    fail_java_heap_configuration 'launcher baseline is unavailable'
+
+  temporary_path="$(mktemp "${PZ_SERVER_DIR}/.ProjectZomboid64.json.tmp.XXXXXX")"
+  cp -- "${launcher_baseline}" "${temporary_path}"
+  chmod 0644 "${temporary_path}"
+  mv -- "${temporary_path}" "${launcher_config}"
+
+  [[ -n "${PZ_JAVA_XMX}" ]] || return 0
+  [[ "${PZ_JAVA_XMX}" =~ ^[1-9][0-9]*[mMgG]$ ]] || \
+    fail_java_heap_configuration 'PZ_JAVA_XMX must be a positive whole number followed by m or g'
+
+  match_count="$(grep -oE '"-Xmx[^"]*"' "${launcher_config}" | wc -l || true)"
+  [[ "${match_count}" -eq 1 ]] || \
+    fail_java_heap_configuration 'launcher configuration must contain exactly one -Xmx argument'
+
+  temporary_path="$(mktemp "${PZ_SERVER_DIR}/.ProjectZomboid64.json.tmp.XXXXXX")"
+  sed "s/\"-Xmx[^\"]*\"/\"-Xmx${PZ_JAVA_XMX}\"/" "${launcher_config}" > "${temporary_path}"
+  grep -Fqx "    \"-Xmx${PZ_JAVA_XMX}\"," "${temporary_path}" || \
+    grep -Fq "\"-Xmx${PZ_JAVA_XMX}\"" "${temporary_path}" || \
+    fail_java_heap_configuration 'could not update the launcher heap argument'
+  chmod 0644 "${temporary_path}"
+  mv -- "${temporary_path}" "${launcher_config}"
 }
 
 update_ini_setting() {
@@ -158,6 +198,7 @@ configure_rcon() {
 }
 
 configure_rcon "$@"
+configure_java_heap
 
 server_command=("${PZ_SERVER_DIR}/start-server.sh" "$@")
 if [[ -n "${PZ_RCON_PASSWORD_FILE:-}" ]]; then

@@ -64,6 +64,22 @@ console 指令；未設定時維持 Project Zomboid 的正常啟動路徑。這�
 與 `docker inspect` 的容器設定中，請勿使用容易猜測的密碼，並於首次初始化後從後續容器
 設定中移除它。
 
+### 本機測試時降低 Java heap
+
+Project Zomboid 預設使用 `-Xmx8g`。若 Docker Desktop 的本機可用記憶體不足，可在 `docker run`
+加入例如 `-e PZ_JAVA_XMX=2g`，讓這次啟動的 Java heap 上限改為 2 GiB：
+
+```sh
+docker run --platform linux/amd64 --name pz-server -itd \
+  -v pz-data:/home/steam/Zomboid \
+  -e PZ_JAVA_XMX=2g \
+  pz-server:local
+```
+
+`PZ_JAVA_XMX` 只接受正整數加 `m` 或 `g`，例如 `512m`、`2g`；未設定時維持遊戲提供的
+預設值。它限制的是 **Java heap**，不是 Docker 容器的總記憶體，仍可能因 Java 以外的記憶體
+使用而 OOM；設定太小也可能讓伺服器無法正常載入世界或模組。
+
 ```sh
 docker stop --timeout 60 pz-server
 ```

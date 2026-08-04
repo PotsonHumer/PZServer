@@ -43,14 +43,28 @@ PZ_SERVER_DIR="$TEST_DIR/pzserver"
 PZ_DATA_DIR="$TEST_DIR/Zomboid"
 PASSWORD_FILE="$TEST_DIR/rcon-password"
 START_LOG="$TEST_DIR/start.log"
+LAUNCHER_LOG="$TEST_DIR/launcher.json"
 MCRCON_LOG="$TEST_DIR/mcrcon.log"
 mkdir -p "$PZ_SERVER_DIR" "$PZ_DATA_DIR"
 
 cat > "$PZ_SERVER_DIR/start-server.sh" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$START_LOG"
+cp "$PZ_SERVER_DIR/ProjectZomboid64.json" "$LAUNCHER_LOG"
 EOF
 chmod 0755 "$PZ_SERVER_DIR/start-server.sh"
+
+cat > "$PZ_SERVER_DIR/ProjectZomboid64.json" <<'EOF'
+{
+  "vmArgs": [
+    "-Djava.awt.headless=true",
+    "-Xmx8g",
+    "-Dtest=true"
+  ]
+}
+EOF
+cp "$PZ_SERVER_DIR/ProjectZomboid64.json" "$PZ_SERVER_DIR/ProjectZomboid64.default.json"
+chmod 0444 "$PZ_SERVER_DIR/ProjectZomboid64.default.json"
 
 cat > "$TEST_DIR/mcrcon" <<'EOF'
 #!/usr/bin/env bash
@@ -65,13 +79,18 @@ set -Eeuo pipefail
 printf 'mock response\n'
 EOF
 chmod 0755 "$TEST_DIR/mcrcon"
+sed "s|/usr/local/bin/mcrcon|${TEST_DIR}/mcrcon|" "$PZ_RCON" > "$PZ_RCON.tmp"
+mv "$PZ_RCON.tmp" "$PZ_RCON"
+chmod 0755 "$PZ_RCON"
 
 run_entrypoint() {
   env \
     HOME="$TEST_DIR/home" \
     PZ_SERVER_DIR="$PZ_SERVER_DIR" \
     PZ_DATA_DIR="$PZ_DATA_DIR" \
+    PZ_JAVA_XMX= \
     START_LOG="$START_LOG" \
+    LAUNCHER_LOG="$LAUNCHER_LOG" \
     "$@" \
     "$ENTRYPOINT"
 }
@@ -92,6 +111,7 @@ assert_equals 600 "$(stat -f '%Lp' "$config_path" 2>/dev/null || stat -c '%a' "$
 grep -Fq -- 'first-secret' "$entrypoint_output" && fail 'entrypoint exposed the password'
 grep -Fqx -- '-servername' "$START_LOG" || fail 'entrypoint did not select the RCON server name'
 grep -Fqx -- 'local-rcon' "$START_LOG" || fail 'entrypoint did not pass the RCON server name'
+grep -Fq '"-Xmx8g"' "$LAUNCHER_LOG" || fail 'entrypoint did not preserve the default Java heap'
 
 printf 'second-secret\n' > "$PASSWORD_FILE"
 run_entrypoint \
@@ -116,6 +136,21 @@ grep -Fq -- 'second-secret' "$entrypoint_output" && fail 'missing password error
 rm -rf -- "$PZ_DATA_DIR"
 run_entrypoint > "$entrypoint_output" 2>&1
 [[ ! -e "$PZ_DATA_DIR/Server/servertest.ini" ]] || fail 'RCON config was created without opt-in'
+
+run_entrypoint PZ_JAVA_XMX=2g > "$entrypoint_output" 2>&1
+assert_equals 1 "$(grep -c '"-Xmx2g"' "$LAUNCHER_LOG")"
+grep -R -F -- '-Xmx2g' "$PZ_DATA_DIR" >/dev/null 2>&1 && fail 'Java heap override was written to persistent data'
+
+run_entrypoint > "$entrypoint_output" 2>&1
+assert_equals 1 "$(grep -c '"-Xmx8g"' "$LAUNCHER_LOG")"
+
+rm -f "$START_LOG" "$LAUNCHER_LOG"
+if run_entrypoint PZ_JAVA_XMX='2g -XX:+UseSerialGC' > "$entrypoint_output" 2>&1; then
+  fail 'invalid Java heap override unexpectedly started the server'
+fi
+grep -Fq 'PZ_JAVA_XMX must be a positive whole number followed by m or g' "$entrypoint_output" || \
+  fail 'invalid Java heap error was not reported'
+[[ ! -e "$START_LOG" ]] || fail 'invalid Java heap override started the server command'
 
 mkdir -p "$PZ_DATA_DIR/Server"
 printf 'RCONPort=27016\nRCONPassword=second-secret\n' > "$config_path"
