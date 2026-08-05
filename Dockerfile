@@ -68,10 +68,11 @@ FROM ubuntu:24.04
 ENV PZ_SERVER_DIR=/home/steam/pzserver \
     PZ_DATA_DIR=/home/steam/Zomboid \
     HOME=/home/steam \
+    PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin \
     PZ_JAVA_XMX=
 
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends ca-certificates \
+    && apt-get install --yes --no-install-recommends ca-certificates python3 \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash steam \
     && mkdir -p "${PZ_DATA_DIR}" \
@@ -290,6 +291,150 @@ MCRCON_HOST=127.0.0.1 \
 MCRCON_PORT="${rcon_port}" \
 MCRCON_PASS="${rcon_password}" \
   exec /usr/local/bin/mcrcon "$@"
+EOF
+
+COPY --chmod=755 <<'EOF' /usr/local/bin/pz-query
+#!/usr/bin/env python3
+
+import os
+import socket
+import struct
+import sys
+
+
+DEFAULT_PORT = 16261
+QUERY_TIMEOUT_SECONDS = 3
+PACKET_HEADER = b"\xff\xff\xff\xff"
+INFO_REQUEST = PACKET_HEADER + b"TSource Engine Query\x00"
+
+
+class QueryError(Exception):
+    pass
+
+
+class PacketReader:
+    def __init__(self, data):
+        self.data = data
+        self.offset = 0
+
+    def read(self, length):
+        end = self.offset + length
+        if end > len(self.data):
+            raise QueryError("A2S information reply is truncated")
+        value = self.data[self.offset:end]
+        self.offset = end
+        return value
+
+    def byte(self):
+        return self.read(1)[0]
+
+    def uint16(self):
+        return struct.unpack("<H", self.read(2))[0]
+
+    def string(self):
+        end = self.data.find(b"\x00", self.offset)
+        if end < 0:
+            raise QueryError("A2S information reply has an unterminated string")
+        self.offset = end + 1
+
+
+def fail(message):
+    print("pz-query: " + message, file=sys.stderr)
+    return 1
+
+
+def server_config_path():
+    data_dir = os.environ.get("PZ_DATA_DIR")
+    if not data_dir:
+        data_dir = os.path.join(os.environ.get("HOME", "/home/steam"), "Zomboid")
+
+    server_name = os.environ.get("PZ_SERVER_NAME", "servertest")
+    if not server_name or "/" in server_name or "\n" in server_name:
+        raise QueryError("server name is invalid")
+
+    return os.path.join(data_dir, "Server", server_name + ".ini")
+
+
+def configured_port():
+    config_path = server_config_path()
+    try:
+        with open(config_path, encoding="utf-8") as config_file:
+            for line in config_file:
+                if line.startswith("DefaultPort="):
+                    port_value = line[len("DefaultPort="):].rstrip("\r\n")
+                    if not port_value.isdecimal():
+                        raise QueryError("DefaultPort is invalid")
+                    port = int(port_value)
+                    if not 1 <= port <= 65535:
+                        raise QueryError("DefaultPort is invalid")
+                    return port
+    except FileNotFoundError:
+        return DEFAULT_PORT
+    except OSError as error:
+        raise QueryError("could not read server configuration: " + str(error)) from error
+
+    return DEFAULT_PORT
+
+
+def receive_info_reply(sock):
+    sock.send(INFO_REQUEST)
+    response = sock.recv(1400)
+
+    if response.startswith(PACKET_HEADER + b"A"):
+        if len(response) != len(PACKET_HEADER) + 1 + 4:
+            raise QueryError("A2S challenge reply is invalid")
+        sock.send(INFO_REQUEST + response[-4:])
+        response = sock.recv(1400)
+
+    return response
+
+
+def parse_player_counts(response):
+    if not response.startswith(PACKET_HEADER + b"I"):
+        raise QueryError("A2S information reply is invalid")
+
+    reader = PacketReader(response[len(PACKET_HEADER) + 1:])
+    reader.byte()  # protocol version
+    for _ in range(4):
+        reader.string()
+    reader.uint16()  # application ID
+    players = reader.byte()
+    max_players = reader.byte()
+
+    if players > max_players:
+        raise QueryError("A2S player count exceeds the reported maximum")
+
+    return players, max_players
+
+
+def query_player_counts(port):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(QUERY_TIMEOUT_SECONDS)
+            sock.connect(("127.0.0.1", port))
+            return parse_player_counts(receive_info_reply(sock))
+    except socket.timeout as error:
+        raise QueryError("A2S query timed out") from error
+    except OSError as error:
+        raise QueryError("A2S query failed: " + str(error)) from error
+
+
+def main():
+    if len(sys.argv) != 1:
+        return fail("this command does not accept arguments")
+
+    try:
+        players, max_players = query_player_counts(configured_port())
+    except QueryError as error:
+        return fail(str(error))
+
+    print("players=" + str(players))
+    print("max_players=" + str(max_players))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 EOF
 
 USER steam

@@ -103,18 +103,40 @@ docker logs --follow pz-server
 `STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
 遺失尚未儲存的進度；請定期備份持久化資料目錄。
 
-## 僅限容器本機的 RCON 管理指令
+## 僅限容器本機的管理指令
 
-這個功能讓你登入 Linux 主機後，可以直接下 PZ 的管理指令，例如查玩家、存檔與正常關服。
-設定完成後，平常只需記得：
+這些功能讓你登入 Linux 主機後，直接查詢目前人數，或下 PZ 的管理指令。設定完成後，平常只需記得：
 
 ```sh
-docker exec pz-server pz-rcon players  # 誰在線上？
+docker exec pz-server pz-query         # 目前有幾個人在線上？
 docker exec pz-server pz-rcon save     # 立刻存檔
 docker exec pz-server pz-rcon quit     # 正常關閉伺服器
 ```
 
-不會開放 RCON 到網際網路或區網，也不需要額外在 Linux 安裝工具。
+`pz-query` 不需要 RCON 或 RCON 密碼；它只會在容器內查詢 PZ 的 loopback A2S 狀態。`pz-rcon`
+則用於存檔、公告與關服等管理動作。兩者都不會開放管理埠到網際網路或區網，也不需要額外在
+Linux 安裝工具。
+
+### 查詢線上人數（不需要 RCON）
+
+伺服器正在運行時，直接執行：
+
+```sh
+docker exec pz-server pz-query
+```
+
+成功時，輸出固定為兩行：
+
+```text
+players=0
+max_players=32
+```
+
+`players=0` 明確表示伺服器目前沒有人；它不是空白回應。若伺服器尚未啟動完成、已停止、沒有回應，
+或設定中的 `DefaultPort` 無效，指令會在 stderr 顯示原因並以非零狀態結束，且**不會**輸出
+`players=`。它會讀取所選伺服器的 `DefaultPort`；未設定時使用 `16261`，不需要另外發布埠。
+
+### 使用 RCON 管理伺服器
 
 ### 第 1 步：準備 RCON 密碼檔
 
@@ -154,7 +176,6 @@ docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
 容器運行後，從同一台 Linux 主機執行：
 
 ```sh
-docker exec pz-server pz-rcon players          # 列出在線玩家
 docker exec pz-server pz-rcon save             # 立刻存檔
 docker exec pz-server pz-rcon 'servermsg "伺服器將於 5 分鐘後維護"'
 ```
