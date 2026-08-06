@@ -1,14 +1,10 @@
-## Purpose
-
-Define the root cron workflow that invokes the Compose-backed Project Zomboid backup and powers off the Linux host only after that backup succeeds.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Serialized root-run backup workflow
 The project SHALL provide a non-interactive root-only shell workflow for a root cron job. The
 workflow SHALL reject non-root execution, acquire a non-blocking exclusive lock before invoking the
 Compose backup command, and validate that Docker Compose, `flock`, `sync`, and the host
-power-management command are available. It SHALL run `docker compose run --rm --no-deps pz-backup` from
+power-management command are available. It SHALL run `docker compose run --no-deps pz-backup` from
 `PZ_COMPOSE_DIR`, defaulting to `/var/PZServer`.
 
 #### Scenario: A second invocation overlaps an active run
@@ -42,12 +38,12 @@ and matching checksum only after verification succeeds.
 #### Scenario: A complete offline backup is created
 - **WHEN** the RCON shutdown and archive stages succeed
 - **THEN** the backup directory SHALL contain a finalized timestamped `.tar.gz` archive and matching
-  checksum file for the entire `pz-data` volume
+checksum file for the entire `pz-data` volume
 
 #### Scenario: Archive creation fails
 - **WHEN** archive creation or checksum verification fails
 - **THEN** the workflow SHALL not finalize the new archive, prune a prior backup, or power off the
-  host
+host
 
 ### Requirement: Successful backup retention
 The Compose backup service SHALL retain the three newest finalized archives that match its own
@@ -58,12 +54,12 @@ archive/checksum pairs after a new archive has been finalized and verified. It S
 #### Scenario: A fourth successful backup is finalized
 - **WHEN** finalizing a new archive would leave four matching finalized backups
 - **THEN** the service SHALL retain the three newest archives and matching checksum files and remove
-  the oldest matching archive and checksum pair
+the oldest matching archive and checksum pair
 
 #### Scenario: A new backup fails before finalization
 - **WHEN** a new archive does not reach the finalized state
 - **THEN** the workflow SHALL preserve every existing finalized backup regardless of the retention
-  limit
+limit
 
 ### Requirement: Conditional host power-off
 The root-host workflow SHALL call `sync` and power off the complete Linux host with `systemctl

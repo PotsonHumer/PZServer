@@ -1,0 +1,87 @@
+services:
+  pz-server:
+    build:
+      context: .
+      network: host
+    image: pz-server:local
+    platform: linux/amd64
+    container_name: pz-server
+    stop_grace_period: 120s
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      PZ_RCON_PASSWORD_FILE: /run/secrets/pz-rcon-password
+      PZ_RCON_PORT: "27015"
+      PZ_SERVER_NAME: "420正版"
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    volumes:
+      - pz-data:/home/steam/Zomboid
+    ports:
+      - "16261:16261/udp"
+      - "16262:16262/udp"
+    secrets:
+      - source: pz-rcon-password
+        target: pz-rcon-password
+
+  pz-query:
+    image: pz-server:local
+    platform: linux/amd64
+    profiles:
+      - management
+    entrypoint:
+      - /usr/local/bin/pz-query
+    network_mode: container:pz-server
+    environment:
+      PZ_SERVER_NAME: "420正版"
+    volumes:
+      - pz-data:/home/steam/Zomboid:ro
+
+  pz-rcon:
+    image: pz-server:local
+    platform: linux/amd64
+    profiles:
+      - management
+    entrypoint:
+      - /usr/local/bin/pz-rcon
+    network_mode: container:pz-server
+    environment:
+      PZ_SERVER_NAME: "420正版"
+    volumes:
+      - pz-data:/home/steam/Zomboid:ro
+
+  pz-backup:
+    image: pz-server:local
+    platform: linux/amd64
+    profiles:
+      - management
+    user: "0:0"
+    entrypoint:
+      - /usr/local/bin/pz-backup
+    network_mode: container:pz-server
+    environment:
+      PZ_SERVER_NAME: "420正版"
+      PZ_DATA_DIR: /source
+      PZ_BACKUP_SOURCE_DIR: /source
+      PZ_BACKUP_DIR: /backup
+    volumes:
+      - pz-data:/source:ro
+      - pz-backup:/backup
+      - /var/run/docker.sock:/var/run/docker.sock
+
+secrets:
+  pz-rcon-password:
+    file: ./secrets/rcon-password
+
+volumes:
+  pz-data:
+    name: pz-data
+    external: true
+  pz-backup:
+    name: pz-backup
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ${PZ_BACKUP_DIR:-/home/potsonhumer/pz-backup}

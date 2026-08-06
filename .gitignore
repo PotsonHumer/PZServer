@@ -6,6 +6,9 @@
 # Local RCON secret (keep secrets/.gitkeep tracked)
 /secrets/rcon-password
 
+# Local Compose runtime settings
+/.env
+
 # Local logs
 *.log
 

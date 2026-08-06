@@ -63,6 +63,8 @@ RUN curl --fail --location --silent --show-error \
     && test -x /usr/local/bin/mcrcon \
     && rm -rf /tmp/mcrcon /tmp/mcrcon.zip
 
+FROM --platform=$TARGETPLATFORM docker:27.5.1-cli AS docker-client
+
 FROM ubuntu:24.04
 
 ENV PZ_SERVER_DIR=/home/steam/pzserver \
@@ -80,6 +82,7 @@ RUN apt-get update \
 
 COPY --from=downloader --chown=steam:steam /home/steam/pzserver ${PZ_SERVER_DIR}
 COPY --from=rcon-client --chmod=755 /usr/local/bin/mcrcon /usr/local/bin/mcrcon
+COPY --from=docker-client --chmod=755 /usr/local/bin/docker /usr/local/bin/docker
 
 RUN install --mode=0444 \
         "${PZ_SERVER_DIR}/ProjectZomboid64.json" \
@@ -435,6 +438,156 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+EOF
+
+COPY --chmod=755 <<'EOF' /usr/local/bin/pz-backup
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+IFS=$'\n\t'
+
+readonly PZ_CONTAINER_NAME="${PZ_CONTAINER_NAME:-pz-server}"
+readonly PZ_BACKUP_SOURCE_DIR="${PZ_BACKUP_SOURCE_DIR:-/source}"
+readonly PZ_BACKUP_DIR="${PZ_BACKUP_DIR:-/backup}"
+readonly RETAIN_COUNT=3
+
+PARTIAL_PATH=''
+CHECKSUM_PARTIAL_PATH=''
+
+log() {
+  printf '%s %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$*"
+}
+
+fail() {
+  log "ERROR: $*" >&2
+  exit 1
+}
+
+cleanup() {
+  local status=$?
+
+  [[ -z "$PARTIAL_PATH" || ! -e "$PARTIAL_PATH" ]] || rm -f -- "$PARTIAL_PATH"
+  [[ -z "$CHECKSUM_PARTIAL_PATH" || ! -e "$CHECKSUM_PARTIAL_PATH" ]] || \
+    rm -f -- "$CHECKSUM_PARTIAL_PATH"
+  exit "$status"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "required command is unavailable: $1"
+}
+
+container_is_running() {
+  local state
+
+  state="$(docker inspect --format '{{.State.Running}}' "$PZ_CONTAINER_NAME")" || \
+    fail "could not inspect container state: $PZ_CONTAINER_NAME"
+  [[ "$state" == 'true' ]] || fail "container is not running: $PZ_CONTAINER_NAME"
+}
+
+acquire_lock() {
+  [[ -d "$PZ_BACKUP_DIR" ]] || fail "backup path is not a directory: $PZ_BACKUP_DIR"
+  exec 9>"$PZ_BACKUP_DIR/.pz-backup.lock"
+  flock -n 9 || fail 'another backup is already active'
+}
+
+wait_for_clean_exit() {
+  local exit_code
+
+  log "waiting for $PZ_CONTAINER_NAME to exit"
+  exit_code="$(docker wait "$PZ_CONTAINER_NAME")" || \
+    fail "could not wait for container: $PZ_CONTAINER_NAME"
+  [[ "$exit_code" =~ ^[0-9]+$ ]] || \
+    fail "container exit code is invalid: $exit_code"
+  [[ "$exit_code" == '0' ]] || \
+    fail "container exited unsuccessfully: $exit_code"
+}
+
+is_our_archive_name() {
+  [[ "$1" =~ ^pz-data-[0-9]{8}T[0-9]{6}Z-[0-9]+\.tar\.gz$ ]]
+}
+
+prune_backups() {
+  local candidate index
+  local -a archives=()
+
+  while IFS= read -r candidate; do
+    is_our_archive_name "$candidate" || continue
+    [[ -f "$PZ_BACKUP_DIR/$candidate.sha256" ]] && archives+=("$candidate")
+  done < <(
+    find "$PZ_BACKUP_DIR" -maxdepth 1 -type f -name 'pz-data-*.tar.gz' -printf '%f\n' | \
+      LC_ALL=C sort -r
+  )
+
+  for ((index = RETAIN_COUNT; index < ${#archives[@]}; index++)); do
+    log "removing expired backup: ${archives[index]}"
+    rm -f -- "$PZ_BACKUP_DIR/${archives[index]}" "$PZ_BACKUP_DIR/${archives[index]}.sha256"
+  done
+}
+
+archive_volume() {
+  local stamp archive_name checksum_name owner checksum
+  local archive_path checksum_path
+
+  [[ -d "$PZ_BACKUP_SOURCE_DIR" ]] || \
+    fail "backup source is not a directory: $PZ_BACKUP_SOURCE_DIR"
+  owner="$(stat --format '%u:%g' "$PZ_BACKUP_DIR")" || \
+    fail 'could not determine backup directory ownership'
+  [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || fail 'backup directory ownership is invalid'
+
+  stamp="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
+  archive_name="pz-data-${stamp}.tar.gz"
+  checksum_name="${archive_name}.sha256"
+  archive_path="$PZ_BACKUP_DIR/$archive_name"
+  PARTIAL_PATH="${archive_path}.partial"
+  checksum_path="$PZ_BACKUP_DIR/$checksum_name"
+  CHECKSUM_PARTIAL_PATH="${checksum_path}.partial"
+
+  log "creating offline archive: $archive_name"
+  tar -C "$PZ_BACKUP_SOURCE_DIR" -czf "$PARTIAL_PATH" . || \
+    fail 'volume archive command failed'
+  [[ -s "$PARTIAL_PATH" ]] || fail 'archive command produced no archive data'
+
+  checksum="$(sha256sum "$PARTIAL_PATH")"
+  checksum="${checksum%% *}"
+  [[ "$checksum" =~ ^[0-9a-fA-F]{64}$ ]] || fail 'could not calculate a SHA-256 checksum'
+  printf '%s  %s\n' "$checksum" "$archive_name" > "$CHECKSUM_PARTIAL_PATH"
+
+  mv -- "$PARTIAL_PATH" "$archive_path"
+  PARTIAL_PATH=''
+  mv -- "$CHECKSUM_PARTIAL_PATH" "$checksum_path"
+  CHECKSUM_PARTIAL_PATH=''
+  (
+    cd "$PZ_BACKUP_DIR"
+    sha256sum --check "$checksum_name" >/dev/null
+  ) || fail 'new archive failed SHA-256 verification'
+
+  chown "$owner" -- "$archive_path" "$checksum_path" || \
+    fail 'could not set finalized backup ownership'
+  chmod 0640 -- "$archive_path" "$checksum_path" || \
+    fail 'could not set finalized backup permissions'
+  prune_backups
+}
+
+main() {
+  local command
+
+  for command in docker pz-rcon tar sha256sum flock find sort stat chown chmod rm mv date; do
+    require_command "$command"
+  done
+  acquire_lock
+  container_is_running
+
+  log 'saving the Project Zomboid world through RCON'
+  pz-rcon save || fail 'RCON save command failed'
+  log 'requesting Project Zomboid shutdown through RCON'
+  pz-rcon quit || fail 'RCON quit command failed'
+  wait_for_clean_exit
+  archive_volume
+  log 'backup succeeded'
+}
+
+trap cleanup EXIT
+main "$@"
 EOF
 
 USER steam

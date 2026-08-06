@@ -19,17 +19,17 @@ x86_64 轉譯執行完整遊戲與 Java 程序。**不會執行 SteamCMD**。若
 ## 建置
 
 請在 Apple Silicon、Linux x86_64 或 Windows Docker Desktop 的 Linux containers 模式中，
-從本目錄建置映像。
+從本目錄以 Docker Compose 建置映像。
 
 ```sh
-docker build --load --platform linux/amd64 --network host -t pz-server:local .
+docker compose build
 ```
 
 建置會以匿名存取、依建置架構選擇的官方 DepotDownloader，從 Steam 的公開穩定分支
 下載目前的 Build 42 專用伺服器，並驗證下載器的 SHA-256；完成後才將檔案複製至
 `linux/amd64` 最終映像。此步驟需要網路連線，且可能花費數分鐘。
 
-下載層請使用 `--network host`，讓 Steam 連線直接使用部署主機的網路。
+Compose 已為下載層設定 host network，讓 Steam 連線直接使用部署主機的網路。
 
 本映像刻意不使用在 Apple Silicon 上無法可靠執行的 32 位元 SteamCMD。若
 DepotDownloader 建置失敗，Docker 會立刻以非零狀態結束；請保留最後成功的映像，
@@ -38,91 +38,103 @@ DepotDownloader 建置失敗，Docker 會立刻以非零狀態結束；請保留
 所有要連線的玩家都必須使用 Steam 的正常公開版本；請勿選擇 `Unstable`、`42.19` 或其他
 Beta 分支，否則會與此 Build 42 Stable 伺服器發生版本不符。
 
-## 持久化伺服器資料與首次啟動
+## Docker Compose：持久化資料與啟動
 
-Project Zomboid 會在容器內的 `/home/steam/Zomboid` 儲存產生的設定與多人存檔。映像的
-entrypoint 會在這個目錄不存在時自動建立它。請掛載此路徑；**不要**掛載覆蓋
-`/home/steam/pzserver`，該處存放的是映像內安裝的遊戲檔案。
+Compose 會使用**既有名稱**為 `pz-data` 的 Docker volume，掛載至容器內的
+`/home/steam/Zomboid`。其中包含 `420正版` 的設定與多人世界；**不要**掛載覆蓋
+`/home/steam/pzserver`，該處存放映像內安裝的遊戲檔案。
 
-第一次啟動時請保持終端機連接。以下範例會自動設定管理員密碼，並使用具名 Docker
-volume `pz-data` 儲存設定與世界；volume 不存在時 Docker 會自動建立它。初始設定完成後，
-從另一個終端機停止伺服器：
+### 第一次準備
 
-```sh
-docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
-  -v pz-data:/home/steam/Zomboid \
-  -p 16261:16261/udp \
-  -p 16262:16262/udp \
-  -e PZ_ADMIN_PASSWORD='請換成強密碼' \
-  pz-server:local
-```
-
-`PZ_ADMIN_PASSWORD` 會在首次建立時自動設定 `admin` 帳號，因此不會要求互動輸入。
-映像只會在偵測到 PZ 的兩個首次密碼提示時，經由僅存在於記憶體的私有 stdin FIFO 提供
-這個值，避免 PZ 啟動器把密碼當成 command-line argument 寫進日誌，也不會把它當成伺服器
-console 指令；未設定時維持 Project Zomboid 的正常啟動路徑。這個值仍會出現在 shell 歷史
-與 `docker inspect` 的容器設定中，請勿使用容易猜測的密碼，並於首次初始化後從後續容器
-設定中移除它。
-
-### 本機測試時降低 Java heap
-
-Project Zomboid 預設使用 `-Xmx8g`。若 Docker Desktop 的本機可用記憶體不足，可在 `docker run`
-加入例如 `-e PZ_JAVA_XMX=2g`，讓這次啟動的 Java heap 上限改為 2 GiB：
+準備本機 RCON 密碼檔。它只放一行難以猜測的 RCON 密碼，且已被 Git 忽略：
 
 ```sh
-docker run --platform linux/amd64 --name pz-server -itd \
-  -v pz-data:/home/steam/Zomboid \
-  -e PZ_JAVA_XMX=2g \
-  pz-server:local
+chmod 0444 ./secrets/rcon-password
 ```
 
-`PZ_JAVA_XMX` 只接受正整數加 `m` 或 `g`，例如 `512m`、`2g`；未設定時維持遊戲提供的
-預設值。它限制的是 **Java heap**，不是 Docker 容器的總記憶體，仍可能因 Java 以外的記憶體
-使用而 OOM；設定太小也可能讓伺服器無法正常載入世界或模組。
+接著建立本機環境檔：
 
 ```sh
-docker stop --timeout 60 pz-server
+cp .env.example .env
 ```
 
-後續執行時，可在背景啟動既有且已設定的容器，或連接至其主控台：
+在 `.env` 設定第一次建立 `admin` 帳號所需的 `PZ_ADMIN_PASSWORD`，以及本機適用的
+`PZ_JAVA_XMX`。例如 `PZ_JAVA_XMX=2g` 會將 Java heap 上限限制為 2 GiB。它只接受正整數
+加 `m` 或 `g`，例如 `512m`、`2g`；未設定時維持遊戲提供的預設值。這限制的是 **Java heap**，
+不是 Docker 容器的總記憶體，仍可能因 Java 以外的記憶體使用而 OOM。
+
+`PZ_ADMIN_PASSWORD` 只在首次建立帳號時需要。帳號建立後可把 `.env` 中該值清空，再執行
+`docker compose up -d` 讓 Compose 重建容器；密碼不會留在後續容器設定中。
+
+### 啟動、停止與更新
+
+首次啟動或要重建映像時：
 
 ```sh
-docker start pz-server
-docker logs --follow pz-server
+docker compose up -d --build
 ```
 
-重新建置映像後若要替換容器，請保留同一個 `pz-data` volume，並以新映像重複執行
-`docker run` 命令。它包含 `Server/` 設定與 `Saves/Multiplayer/` 世界資料。可使用
-`docker volume inspect pz-data` 查看其 Docker 管理的位置。
+平常啟動既有服務與查看日誌：
 
-若刻意需要主機可見的檔案，也能改用 bind mount，例如
-`-v "$PWD/data:/home/steam/Zomboid"`；此時 `data` 是主機目錄，必須由主機端建立並確保
-容器內 `steam` 使用者可寫入。Dockerfile 無法建立部署主機上的這個目錄，因此本文的主要
-指令採用 `pz-data` volume。
+```sh
+docker compose up -d
+docker compose logs --follow
+```
 
-`STOPSIGNAL` 與 `--stop-timeout 60` 會讓伺服器有機會完成正常關閉。強制停止仍可能
-遺失尚未儲存的進度；請定期備份持久化資料目錄。
+`docker compose down` 會以 60 秒寬限時間停止伺服器，且**不會**刪除 `pz-data`；不要加
+`-v`。強制停止仍可能遺失尚未儲存的進度，請定期備份持久化資料。
+
+PZ 遊戲更新時，普通建置可能重用已快取的伺服器下載層。請改用：
+
+```sh
+docker compose build --no-cache
+docker compose up -d
+```
+
+### 從舊的手動容器遷移
+
+若已有用 `docker run` 建立的 `pz-server`，Compose 無法同時使用相同容器名稱。先在維護時段
+公告、存檔並正常關服，再刪除**容器本身**：
+
+```sh
+docker exec pz-server pz-rcon 'servermsg "伺服器現在關閉以切換 Docker Compose"'
+docker exec pz-server pz-rcon save
+docker exec pz-server pz-rcon quit
+docker wait pz-server
+docker rm pz-server
+```
+
+然後執行 `docker compose up -d --build`。不要刪除 `pz-data`；Compose 會接回同一份
+`420正版` 設定與世界資料。
 
 ## 僅限容器本機的管理指令
 
-這些功能讓你登入 Linux 主機後，直接查詢目前人數，或下 PZ 的管理指令。設定完成後，平常只需記得：
+這些功能讓你登入 Linux 主機後，直接查詢目前人數，或下 PZ 的管理指令。請在
+`compose.yaml` 所在目錄執行，並先確認遊戲伺服器已啟動：
 
 ```sh
-docker exec pz-server pz-query         # 目前有幾個人在線上？
-docker exec pz-server pz-rcon save     # 立刻存檔
-docker exec pz-server pz-rcon quit     # 正常關閉伺服器
+docker compose up -d
+```
+
+之後平常只需記得：
+
+```sh
+docker compose run pz-query         # 目前有幾個人在線上？
+docker compose run pz-rcon save     # 立刻存檔
+docker compose run pz-rcon quit     # 正常關閉伺服器
 ```
 
 `pz-query` 不需要 RCON 或 RCON 密碼；它只會在容器內查詢 PZ 的 loopback A2S 狀態。`pz-rcon`
 則用於存檔、公告與關服等管理動作。兩者都不會開放管理埠到網際網路或區網，也不需要額外在
-Linux 安裝工具。
+Linux 安裝工具。若 `pz-server` 尚未啟動或已停止，這些指令會以非零狀態失敗，且不會自行
+啟動遊戲伺服器。
 
 ### 查詢線上人數（不需要 RCON）
 
 伺服器正在運行時，直接執行：
 
 ```sh
-docker exec pz-server pz-query
+docker compose run pz-query
 ```
 
 成功時，輸出固定為兩行：
@@ -138,82 +150,82 @@ max_players=32
 
 ### 使用 RCON 管理伺服器
 
-### 第 1 步：準備 RCON 密碼檔
+Compose 會固定啟用容器本機 RCON，並把 `secrets/rcon-password` 掛載到
+`/run/secrets/pz-rcon-password`；這裡沒有 RCON 對外埠。該密碼是 Linux 管理指令使用的
+RCON 密碼，不是玩家或 `admin` 帳號密碼。
 
-在專案根目錄的 `secrets/` 中建立 `rcon-password` 文字檔，內容只放一行難以猜測的密碼。
-這個檔案已被 Git 忽略。建立後讓容器內的 `steam` 使用者可以讀取：
-
-```sh
-chmod 0444 ./secrets/rcon-password
-```
-
-這個檔案是給 Linux 指令使用的 **RCON 密碼**，不是玩家登入密碼，也不是下面的
-`PZ_ADMIN_PASSWORD`。
-
-### 第 2 步：啟動伺服器
-
-在原本的 `docker run` 指令加上三個 `PZ_RCON_*` 設定，以及密碼檔掛載即可。以下可直接
-使用；請只替換 `PZ_ADMIN_PASSWORD` 的值。
+伺服器運行後，從同一台 Linux 主機執行：
 
 ```sh
-docker run --platform linux/amd64 --name pz-server -itd --stop-timeout 60 \
-  -v pz-data:/home/steam/Zomboid \
-  -v ./secrets/rcon-password:/run/secrets/pz-rcon-password:ro \
-  -p 16261:16261/udp \
-  -p 16262:16262/udp \
-  -e PZ_ADMIN_PASSWORD='請換成強密碼' \
-  -e PZ_RCON_PASSWORD_FILE=/run/secrets/pz-rcon-password \
-  -e PZ_RCON_PORT=27015 \
-  -e PZ_SERVER_NAME=servertest \
-  pz-server:local
-```
-
-這裡沒有 `-p 27015:27015`：這是刻意省略的。RCON 只供容器內的 `pz-rcon` 使用，玩家與
-外部網路無法連線到它。
-
-### 第 3 步：在 Linux 主機下管理指令
-
-容器運行後，從同一台 Linux 主機執行：
-
-```sh
-docker exec pz-server pz-rcon save             # 立刻存檔
-docker exec pz-server pz-rcon 'servermsg "伺服器將於 5 分鐘後維護"'
+docker compose run pz-rcon save             # 立刻存檔
+docker compose run pz-rcon 'servermsg "伺服器將於 5 分鐘後維護"'
 ```
 
 要維護或備份時，依序公告、存檔、關服：
 
 ```sh
-docker exec pz-server pz-rcon 'servermsg "伺服器現在關閉以進行維護"'
-docker exec pz-server pz-rcon save
-docker exec pz-server pz-rcon quit
-docker wait pz-server
+docker compose run pz-rcon 'servermsg "伺服器現在關閉以進行維護"'
+docker compose run pz-rcon save
+docker compose run pz-rcon quit
 ```
 
-注意：能執行 `docker exec` 的 Linux 使用者，就能下任何 PZ 管理指令。RCON 密碼會存進
+每次 `docker compose run` 都會建立一個一次性 helper 容器。此處刻意**不使用** `--rm`：
+指令完成後 helper 會維持 `exited`，可用下列指令查看輸出與清理：
+
+```sh
+docker compose ps -a
+docker compose logs pz-query
+docker compose rm pz-query pz-rcon
+```
+
+注意：能執行 Docker Compose 的 Linux 使用者，就能下任何 PZ 管理指令。RCON 密碼會存進
 `pz-data` 的 PZ 設定檔，且隨備份保存；請保護 Docker volume 與備份檔。若不設定
 `PZ_RCON_PASSWORD_FILE`，RCON 不會啟用，伺服器仍照原本方式啟動。
 
-## 排程備份後關閉 Linux 主機
+## 備份與排程關機
+
+### 手動備份
+
+Compose 備份只在 Linux 主機的本專案目錄中使用。先建立**主機上的**備份目錄：
+
+```sh
+mkdir -p /home/potsonhumer/pz-backup
+chmod 0750 /home/potsonhumer/pz-backup
+```
+
+如果要改用其他路徑，在 `.env` 設定 `PZ_BACKUP_DIR=/你的/目錄`，並先自行建立該目錄。
+未設定時，Compose 的 `pz-backup` volume 會使用 `/home/potsonhumer/pz-backup`。
+
+伺服器正在運行時，執行：
+
+```sh
+docker compose run --rm --no-deps pz-backup
+```
+
+它會依序送出 RCON `save`、RCON `quit`，接著**無限期等待** `pz-server` 確實結束，最後才封存
+唯讀的 `pz-data`。它不會使用 `docker stop` 或強制 timeout；RCON、等待、封存或校驗任一階段
+失敗時都不會建立新的完成備份。成功後遊戲伺服器維持停止；需要恢復服務時再執行
+`docker compose up -d`。
+
+備份檔與 `.sha256` 校驗檔會留在目標目錄，檔案擁有者會沿用該目錄的擁有者。每次成功後只保留
+最新三組完成的備份；`.partial` 與無關檔案不會列入或刪除。
+
+`pz-backup` 掛載本機 Docker socket，僅用來確認與等待 `pz-server` 狀態。Docker socket 等同
+Docker 管理權限，只有受信任的本機 Docker 管理者能執行此指令；它不發布任何 Docker、RCON 或
+備份連接埠。`--rm` 會在 runner 結束後自動移除該一次性容器。
+
+### 排程後關機
 
 [`scripts/pz-backup-and-poweroff.sh`](scripts/pz-backup-and-poweroff.sh) 是供 **root 的
-crontab** 使用的主機端腳本。它不是 PZ console 或 RCON 指令；流程會先以
-`docker stop --timeout 120 pz-server` 正常停服，再直接封存完整 `pz-data` volume，最後才
-關閉整台 Linux 主機。
+crontab** 使用的薄主機 wrapper。它在預設的 `/var/PZServer` 專案目錄執行
+`docker compose run --rm --no-deps pz-backup`；`--no-deps` 確保不會協調、重建或啟動
+`pz-server`，`--rm` 會清除已完成的 runner。只有該指令成功後才會 `sync` 並執行
+`systemctl poweroff`。
+它不直接停止 PZ，也不直接建立封存檔。
 
-> 此腳本沒有 dry-run 模式。手動執行成功後會真的呼叫 `systemctl poweroff`，請先在維護時段
-> 使用 mock 測試或確認你可接受主機關機。
+> 此腳本沒有 dry-run 模式。手動執行成功後會真的關閉主機，請先在維護時段使用 mock 測試。
 
-腳本預設使用下列名稱；若部署時不同，可在 root crontab 中以同名環境變數覆寫：
-
-| 項目 | 預設值 |
-| --- | --- |
-| 容器 | `pz-server` (`PZ_CONTAINER_NAME`) |
-| Docker volume | `pz-data` (`PZ_VOLUME_NAME`) |
-| 映像 | `pz-server:local` (`PZ_IMAGE_NAME`) |
-| 備份目錄 | `/home/potsonhumer/pa-backup` (`PZ_BACKUP_DIR`) |
-
-主機必須具備 Docker、`tar`、`sha256sum`、`flock`、`runuser`、`sync` 與 `systemctl`；並且
-`potsonhumer` 使用者與 `root` 群組必須存在。安裝腳本：
+若專案不在 `/var/PZServer`，可在 root crontab 設定 `PZ_COMPOSE_DIR`。安裝腳本：
 
 ```sh
 sudo install -o root -g root -m 0750 \
@@ -221,33 +233,20 @@ sudo install -o root -g root -m 0750 \
   /usr/local/sbin/pz-backup-and-poweroff.sh
 ```
 
-腳本會在不存在時以 `potsonhumer` 身分建立 `/home/potsonhumer/pa-backup`。封存檔與對應的
-`.sha256` 校驗檔會是 `potsonhumer:root`、模式 `0640`。root 會先在自己的暫存目錄產生與驗證
-備份，再交由 `potsonhumer` 發布到家目錄，以避免 root cron 在使用者可寫的家目錄中直接改
-權限或刪除檔案。
-
-每次成功執行後只保留最新三份：
-
-```text
-/home/potsonhumer/pa-backup/
-├── pz-data-20260802T040000Z-1234.tar.gz
-├── pz-data-20260802T040000Z-1234.tar.gz.sha256
-├── pz-data-20260803T040000Z-1234.tar.gz
-├── pz-data-20260803T040000Z-1234.tar.gz.sha256
-├── pz-data-20260804T040000Z-1234.tar.gz
-└── pz-data-20260804T040000Z-1234.tar.gz.sha256
-```
-
-請用 `sudo crontab -e` 安裝排程；例如每天 04:00 執行：
+請用 `sudo crontab -e` 安裝排程；例如專案在預設位置時每天 04:00 執行：
 
 ```cron
 0 4 * * * /usr/local/sbin/pz-backup-and-poweroff.sh >> /var/log/pz-backup-and-poweroff.log 2>&1
 ```
 
-腳本會在下列情況以非零狀態結束，並且**不會**關閉主機：容器或 volume 不存在、另一個備份
-已執行、容器無法正常停止、封存或校驗失敗、或停止後 exit code 為 `137`（Docker 在 120 秒
-後強制結束）。在失敗前不會刪除既有完成的備份；exit code `137` 時也不會建立新備份，請先
-檢查 `docker logs pz-server` 後再處理。
+其他專案位置例如：
+
+```cron
+0 4 * * * PZ_COMPOSE_DIR=/srv/PZServer /usr/local/sbin/pz-backup-and-poweroff.sh >> /var/log/pz-backup-and-poweroff.log 2>&1
+```
+
+另一個備份已執行、RCON 關服失敗、PZ 未正常結束、封存或校驗失敗時，wrapper 會以非零狀態結束，
+並且**不會**關閉主機或刪除既有完成備份。
 
 排程時間與主機下次開機後是否自動啟動 PZ 是獨立的營運決策。後者由 Docker 的 restart policy
 決定，這個腳本不會替你設定。
@@ -257,7 +256,7 @@ sudo install -o root -g root -m 0750 \
 在主機上可先驗證校驗檔：
 
 ```sh
-cd /home/potsonhumer/pa-backup
+cd /home/potsonhumer/pz-backup
 sha256sum --check pz-data-<timestamp>.tar.gz.sha256
 ```
 
@@ -267,7 +266,7 @@ sha256sum --check pz-data-<timestamp>.tar.gz.sha256
 docker volume create pz-data-restore
 docker run --rm --user 0:0 --entrypoint tar \
   -v pz-data-restore:/data \
-  -v /home/potsonhumer/pa-backup:/backup:ro \
+  -v /home/potsonhumer/pz-backup:/backup:ro \
   pz-server:local \
   -C /data -xzf /backup/pz-data-<timestamp>.tar.gz
 ```
